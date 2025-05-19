@@ -16,14 +16,10 @@
  *
  */
 
-use std::time::Duration;
-
-use anyhow::anyhow;
-use chrono::{DateTime, Utc};
-
-use crate::about;
-
 use super::uid;
+use crate::about;
+use chrono::{DateTime, Utc};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct LatestRelease {
@@ -31,12 +27,26 @@ pub struct LatestRelease {
     pub date: DateTime<Utc>,
 }
 
-pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyhow::Error> {
+#[derive(thiserror::Error, Debug)]
+pub enum ReleaseError {
+    #[error("Network request failed: {0}")]
+    RequestFailed(#[from] reqwest::Error),
+
+    #[error("Failed to parse version information from response")]
+    VersionParseError,
+
+    #[error("Missing or invalid published date in response")]
+    DateParseError,
+
+    #[error("Invalid date format: {0}")]
+    DateFormatError(#[from] chrono::format::ParseError),
+}
+
+pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, ReleaseError> {
     let agent = reqwest::ClientBuilder::new()
         .user_agent(about::user_agent(deployment_id))
         .timeout(Duration::from_secs(8))
-        .build()
-        .expect("client can be built on this system");
+        .build()?;
     let json: serde_json::Value = agent
         .get("https://download.parseable.io/latest-version")
         .send()
@@ -47,14 +57,12 @@ pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyho
         .as_str()
         .and_then(|ver| ver.strip_prefix('v'))
         .and_then(|ver| semver::Version::parse(ver).ok())
-        .ok_or_else(|| anyhow!("Failed parsing version"))?;
+        .ok_or(ReleaseError::VersionParseError)?;
     let date = json["published_at"]
         .as_str()
-        .ok_or_else(|| anyhow!("Failed parsing published date"))?;
+        .ok_or(ReleaseError::DateParseError)?;
 
-    let date = chrono::DateTime::parse_from_rfc3339(date)
-        .expect("date-time from github is in rfc3339 format")
-        .into();
+    let date = chrono::DateTime::parse_from_rfc3339(date)?.into();
 
     Ok(LatestRelease { version, date })
 }
